@@ -1,0 +1,18 @@
+{
+  "name": "kk-monad-hunter",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "kangshuisheng",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "viem": "^2.40.3"
+  }
+}

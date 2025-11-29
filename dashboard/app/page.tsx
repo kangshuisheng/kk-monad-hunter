@@ -3,13 +3,6 @@
 import { useState, useEffect } from "react";
 import { useStore } from "@/lib/store";
 import Header from "@/components/Header";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
 import WalletTable from "@/components/wallets/WalletTable";
 import { toast } from "sonner";
 
@@ -70,29 +63,6 @@ export default function Home() {
 
   if (!isMounted) return null;
 
-  // columns selection logic - show token only if ANY wallet has non-zero
-  const tokenColumnKeys = [
-    { key: "aPrioriBalance", label: "aPriori (aprMON)" },
-    { key: "aPrioriStake", label: "aPriori Stake" },
-    { key: "magmaBalance", label: "Magma (gMON)" },
-    { key: "AUSD", label: "AUSD" },
-    { key: "earnAUSD", label: "earnAUSD" },
-    { key: "USDC", label: "USDC" },
-    { key: "WBTC", label: "WBTC" },
-    { key: "WETH", label: "WETH" },
-    { key: "WSOL", label: "WSOL" },
-    { key: "XAUt0", label: "XAUt0" },
-  ];
-
-  const visibleTokenColumns = tokenColumnKeys.filter(({ key }) => {
-    return wallets.some((w) => {
-      const v = (data[w] as any)?.[key];
-      if (!v) return false;
-      const n = Number(v);
-      return !Number.isNaN(n) && n > 0;
-    });
-  });
-
   const explorerBase = "https://monadvision.com";
 
   return (
@@ -109,26 +79,23 @@ export default function Home() {
           setIsDark={setIsDark}
         />
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Wallets</CardTitle>
-            <CardDescription>
-              Overview of added wallets, balances and staking.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="w-full">
-              <WalletTable
-                wallets={wallets}
-                data={data}
-                visibleTokenColumns={visibleTokenColumns}
-                explorerBase={explorerBase}
-                removeWallet={removeWallet}
-                copyAddress={copyAddress}
-              />
-            </div>
-          </CardContent>
-        </Card>
+        <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800">
+          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Wallet Overview</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Monitor your ecosystem interactions and health score.
+            </p>
+          </div>
+          <div className="p-0">
+            <WalletTable
+              wallets={wallets}
+              data={data}
+              explorerBase={explorerBase}
+              removeWallet={removeWallet}
+              copyAddress={copyAddress}
+            />
+          </div>
+        </div>
 
         <div className="text-center text-sm text-slate-500 dark:text-slate-400 pb-4">
           <p>Monad Mainnet • Chain ID: 143</p>

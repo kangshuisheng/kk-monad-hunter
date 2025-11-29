@@ -71,28 +71,6 @@ export const CONTRACTS = {
       },
     ] as const,
   },
-  aPriori: {
-    // aPriori LST (aprMON) — mainnet
-    address: "0x0c65A0BC65a5D819235B71F554D210D3F80E0852" as `0x${string}`, // aprMON
-    abi: [
-      {
-        constant: true,
-        inputs: [{ name: "_owner", type: "address" }],
-        name: "balanceOf",
-        outputs: [{ name: "balance", type: "uint256" }],
-        stateMutability: "view",
-        type: "function",
-      },
-      {
-        constant: true,
-        inputs: [],
-        name: "decimals",
-        outputs: [{ name: "", type: "uint8" }],
-        stateMutability: "view",
-        type: "function",
-      },
-    ] as const,
-  },
   // aPriori ValidatorsRegistry (may track staked principal separately from aprMON token)
   ValidatorsRegistry: {
     address: "0x77f6e4103e32d6146e29cf9ed1645e170f90bc2b" as `0x${string}`,
@@ -295,3 +273,72 @@ export const CONTRACTS = {
     ] as const,
   },
 };
+
+export type ProtocolName = 'aPriori' | 'Magma' | 'Kuru' | 'Uniswap' | 'Account'
+
+export interface ProtocolConfig {
+  name: ProtocolName
+  label: string
+  url: string
+  description: string
+  actions: {
+    label: string
+    url: string
+    intentUrl?: string
+  }[]
+  contract?: {
+    address: `0x${string}`
+    abi: any
+    methods: {
+      balance?: string
+      stake?: string
+    }
+  }
+}
+
+export const PROTOCOLS: ProtocolConfig[] = [
+  {
+    name: 'Magma',
+    label: 'Magma',
+    url: 'https://magma.finance',
+    description: 'Liquid Staking',
+    actions: [
+      { label: 'Stake', url: 'https://magma.finance' }
+    ],
+    contract: {
+      address: CONTRACTS.Magma.address,
+      abi: CONTRACTS.Magma.abi,
+      methods: { balance: 'balanceOf', stake: 'stakedOf' }
+    }
+  },
+  {
+    name: 'Kuru',
+    label: 'Kuru',
+    url: 'https://kuru.io',
+    description: 'Orderbook DEX',
+    actions: [
+      { label: 'Trade', url: 'https://kuru.io/trade' }
+    ],
+    // Placeholder address - User to provide
+    contract: {
+      address: '0x0000000000000000000000000000000000000000',
+      abi: [{ inputs: [{ name: '_owner', type: 'address' }], name: 'balanceOf', outputs: [{ name: 'balance', type: 'uint256' }], stateMutability: 'view', type: 'function' }],
+      methods: { balance: 'balanceOf' }
+    }
+  },
+  {
+    name: 'Uniswap',
+    label: 'Uniswap',
+    url: 'https://app.uniswap.org',
+    description: 'AMM DEX',
+    actions: [
+      { label: 'Swap', url: 'https://app.uniswap.org' }
+    ],
+    // Placeholder address - User to provide
+    contract: {
+      address: '0x0000000000000000000000000000000000000000',
+      abi: [{ inputs: [{ name: '_owner', type: 'address' }], name: 'balanceOf', outputs: [{ name: 'balance', type: 'uint256' }], stateMutability: 'view', type: 'function' }],
+      methods: { balance: 'balanceOf' }
+    }
+  }
+]

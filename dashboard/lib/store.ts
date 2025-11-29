@@ -1,22 +1,16 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { createPublicClient, http, formatEther } from "viem";
-import { monadMainnet, CONTRACTS } from "./config";
+import { monadMainnet, PROTOCOLS } from "./config";
 
 interface WalletData {
   nativeBalance: string;
-  aPrioriBalance: string;
-  magmaBalance: string;
-  aPrioriStake?: string; // principal on ValidatorsRegistry (if available)
-  magmaStake?: string; // any reported stake on Magma (if available)
-  magmaInfo?: string | null; // raw userInfo (if present)
-  AUSD?: string;
-  earnAUSD?: string;
-  USDC?: string;
-  WBTC?: string;
-  WETH?: string;
-  WSOL?: string;
-  XAUt0?: string;
+  protocols: Record<string, {
+    name: string
+    active: boolean
+    balance: string
+    lastInteraction?: number
+  }>
   txCount: number // transaction count (nonce)
   lastActive: number | null // unix ms of last transaction (if available)
   healthScore: number
@@ -87,9 +81,10 @@ export const useStore = create<AppState>()(
           const monBal = parseFloat(walletData.nativeBalance || "0")
           // Use healthScore if available: score < 50 considered unhealthy
           if (typeof walletData.healthScore === 'number') return walletData.healthScore < 50
-          const apBal = parseFloat(walletData.aPrioriBalance || "0")
-          // Fallback: Consider unhealthy if: low gas (< 0.1 MON) OR no staking
-          return monBal < 0.1 || apBal === 0
+
+          // Fallback logic if healthScore not ready (though it should be)
+          const hasProtocols = Object.values(walletData.protocols || {}).some(p => p.active)
+          return monBal < 0.1 || !hasProtocols
         })
       },
 
@@ -100,94 +95,44 @@ export const useStore = create<AppState>()(
         set({ isLoading: true });
 
         try {
+          // Prepare Multicall
           const contracts: any[] = [];
 
-          // Prepare Multicall
-          // tokens we will query per wallet (order matters)
-          const tokenKeys: (keyof typeof CONTRACTS)[] = [
-            "aPriori",
-            "Magma",
-            "AUSD",
-            "earnAUSD",
-            "USDC",
-            "WBTC",
-            "WETH",
-            "WSOL",
-            "XAUt0",
-          ];
-
           for (const wallet of wallets) {
-            // Native Balance (via Multicall3)
+            // 1. Native Balance
             contracts.push({
               address: "0xcA11bde05977b3631167028862bE2a173976CA11",
-              abi: [
-                {
-                  inputs: [{ name: "addr", type: "address" }],
-                  name: "getEthBalance",
-                  outputs: [{ name: "balance", type: "uint256" }],
-                  stateMutability: "view",
-                  type: "function",
-                },
-              ],
+              abi: [{
+                inputs: [{ name: "addr", type: "address" }],
+                name: "getEthBalance",
+                outputs: [{ name: "balance", type: "uint256" }],
+                stateMutability: "view",
+                type: "function",
+              }],
               functionName: "getEthBalance",
               args: [wallet],
             });
 
-            // token balances and decimals (balanceOf + decimals per token)
-            for (const key of tokenKeys) {
-              const token = (CONTRACTS as any)[key];
-              if (!token) continue;
-              // balance
-              contracts.push({
-                address: token.address,
-                abi: token.abi,
-                functionName: "balanceOf",
-                args: [wallet],
-              });
-              // decimals
-              contracts.push({
-                address: token.address,
-                abi: token.abi,
-                functionName: "decimals",
-              });
-            }
-            // validators registry checks (optional)
-            const validators = (CONTRACTS as any)["ValidatorsRegistry"];
-            if (validators) {
-              contracts.push({
-                address: validators.address,
-                abi: validators.abi,
-                functionName: "principalOf",
-                args: [wallet],
-              });
-              contracts.push({
-                address: validators.address,
-                abi: validators.abi,
-                functionName: "balanceOf",
-                args: [wallet],
-              });
-            }
-            // Magma optional getters (stakedOf, principalOf, userInfo) — allowFailure will handle missing methods
-            const magma = (CONTRACTS as any)["Magma"];
-            if (magma) {
-              contracts.push({
-                address: magma.address,
-                abi: magma.abi,
-                functionName: "stakedOf",
-                args: [wallet],
-              });
-              contracts.push({
-                address: magma.address,
-                abi: magma.abi,
-                functionName: "principalOf",
-                args: [wallet],
-              });
-              contracts.push({
-                address: magma.address,
-                abi: magma.abi,
-                functionName: "userInfo",
-                args: [wallet],
-              });
+            // 2. Protocol Balances
+            for (const protocol of PROTOCOLS) {
+              if (protocol.contract) {
+                // Balance
+                contracts.push({
+                  address: protocol.contract.address,
+                  abi: protocol.contract.abi,
+                  functionName: protocol.contract.methods.balance || 'balanceOf',
+                  args: [wallet],
+                })
+                // Stake (if applicable)
+                if (protocol.contract.methods.stake) {
+                  contracts.push({
+                    address: protocol.contract.address,
+                    abi: protocol.contract.abi,
+                    functionName: protocol.contract.methods.stake,
+                    args: [wallet],
+                  })
+                }
+              }
             }
           }
 
@@ -196,188 +141,153 @@ export const useStore = create<AppState>()(
             allowFailure: true,
           });
 
-            const newData: Record<string, WalletData> = {};
+          const newData: Record<string, WalletData> = {};
 
-          // account for extra calls: ValidatorsRegistry (2) + Magma optional getters (3)
-          const callsPerWallet = 1 + tokenKeys.length * 2 + 2 + 3;
+          // Calculate calls per wallet: 1 (native) + PROTOCOLS * (1 or 2 depending on stake)
+          // To be safe, we iterate carefully.
+          let resultIndex = 0;
 
-          const formatToken = (value: bigint, decimals: number) => {
-            const divisor = BigInt(10) ** BigInt(decimals);
-            const whole = value / divisor;
-            const rem = value % divisor;
-            const frac = rem
-              .toString()
-              .padStart(decimals, "0")
-              .slice(0, Math.min(decimals, 6));
-            return frac ? `${whole.toString()}.${frac}` : whole.toString();
-          };
+          for (const wallet of wallets) {
+            // 1. Native
+            const nativeRes = results[resultIndex++];
+            const nativeBalance = nativeRes.status === "success"
+              ? formatEther(nativeRes.result as bigint)
+              : "0";
 
-            for (let i = 0; i < wallets.length; i++) {
-            const wallet = wallets[i];
-            const baseIndex = i * callsPerWallet;
+            // 2. Protocols
+            const protocolData: Record<string, any> = {};
 
-            const nativeRes = results[baseIndex];
-            const nativeBalance =
-              nativeRes.status === "success"
-                ? formatEther(nativeRes.result as bigint)
-                : "0";
+            for (const protocol of PROTOCOLS) {
+              let balance = "0";
+              let active = false;
 
-            const tokenValues: Record<string, string> = {};
-            for (let t = 0; t < tokenKeys.length; t++) {
-              const balRes = results[baseIndex + 1 + t * 2];
-              const decRes = results[baseIndex + 1 + t * 2 + 1];
+              if (protocol.contract) {
+                // Balance
+                const balRes = results[resultIndex++];
+                if (balRes.status === 'success') {
+                  const val = balRes.result as bigint;
+                  if (val > BigInt(0)) {
+                    balance = formatEther(val); // Assuming 18 decimals for simplicity for now, or use token decimals if available
+                    active = true;
+                  }
+                }
 
-              if (balRes.status === "success" && decRes.status === "success") {
-                const bal = balRes.result as bigint;
-                const dec = Number(decRes.result as bigint);
-                tokenValues[tokenKeys[t]] = formatToken(bal, dec);
-              } else {
-                tokenValues[tokenKeys[t]] = "0";
+                // Stake
+                if (protocol.contract.methods.stake) {
+                  const stakeRes = results[resultIndex++];
+                  if (stakeRes.status === 'success') {
+                    const val = stakeRes.result as bigint;
+                    if (val > BigInt(0)) {
+                      // Add stake to balance or track separately? 
+                      // For matrix, just need to know if active.
+                      active = true;
+                      // Update balance to show total (stake + balance)? 
+                      // For now let's just keep balance as liquid and ensure active is true.
+                    }
+                  }
+                }
+              }
+
+              protocolData[protocol.name] = {
+                name: protocol.name,
+                active,
+                balance
               }
             }
 
-            // After standard tokens, attempt to read aPriori staking principal (ValidatorsRegistry)
-            const registryPrincipalRes = results[baseIndex + 1 + tokenKeys.length * 2];
-            const registryBalanceRes = results[baseIndex + 1 + tokenKeys.length * 2 + 1];
-
-            let aPrioriStakeStr = "0";
-            if (registryPrincipalRes && registryPrincipalRes.status === 'success') {
-              // principalOf likely returns raw MON with 18 decimals
-              const v = registryPrincipalRes.result as bigint;
-              aPrioriStakeStr = formatToken(v, 18);
-            } else if (registryBalanceRes && registryBalanceRes.status === 'success') {
-              const v = registryBalanceRes.result as bigint;
-              aPrioriStakeStr = formatToken(v, 18);
-            }
-
-            // After registry, attempt Magma-specific getters (stakedOf, principalOf, userInfo)
-            const magmaStakedRes = results[baseIndex + 1 + tokenKeys.length * 2 + 2];
-            const magmaPrincipalRes = results[baseIndex + 1 + tokenKeys.length * 2 + 3];
-            const magmaUserInfoRes = results[baseIndex + 1 + tokenKeys.length * 2 + 4];
-
-            let magmaStakeStr = '0'
-            let magmaInfoStr: string | null = null
-            if (magmaStakedRes && magmaStakedRes.status === 'success') {
-              magmaStakeStr = formatToken(magmaStakedRes.result as bigint, 18)
-            } else if (magmaPrincipalRes && magmaPrincipalRes.status === 'success') {
-              magmaStakeStr = formatToken(magmaPrincipalRes.result as bigint, 18)
-            }
-
-            if (magmaUserInfoRes && magmaUserInfoRes.status === 'success') {
-              try {
-                // userInfo may return a tuple — convert to JSON string for UI
-                const r = magmaUserInfoRes.result as unknown
-                magmaInfoStr = JSON.stringify(r)
-              } catch (e) {
-                magmaInfoStr = String(magmaUserInfoRes.result)
-              }
-            }
-
-              newData[wallet] = {
+            newData[wallet] = {
               nativeBalance,
-              aPrioriBalance: tokenValues["aPriori"] ?? "0",
-              aPrioriStake: aPrioriStakeStr,
-              magmaStake: magmaStakeStr,
-              magmaInfo: magmaInfoStr,
-              magmaBalance: tokenValues["Magma"] ?? "0",
-              AUSD: tokenValues["AUSD"] ?? "0",
-              earnAUSD: tokenValues["earnAUSD"] ?? "0",
-              USDC: tokenValues["USDC"] ?? "0",
-              WBTC: tokenValues["WBTC"] ?? "0",
-              WETH: tokenValues["WETH"] ?? "0",
-              WSOL: tokenValues["WSOL"] ?? "0",
-              XAUt0: tokenValues["XAUt0"] ?? "0",
+              protocols: protocolData,
               txCount: 0,
               lastActive: null,
               healthScore: 0,
               healthLabel: 'Unknown',
-              lastUpdated: Date.now(),
-            };
+              lastUpdated: Date.now()
+            }
           }
 
-            // fetch txCount for each wallet via RPC (parallel)
-            const txCountPromises = wallets.map((w) => client.getTransactionCount({ address: w as `0x${string}` }))
-            const txCountSettled = await Promise.allSettled(txCountPromises)
+          // fetch txCount for each wallet via RPC (parallel)
+          const txCountPromises = wallets.map((w) => client.getTransactionCount({ address: w as `0x${string}` }))
+          const txCountSettled = await Promise.allSettled(txCountPromises)
 
-            // optional: query explorer API for last tx timestamp if NEXT_PUBLIC_EXPLORER_API_URL provided
-            const explorerUrl = process.env.NEXT_PUBLIC_EXPLORER_API_URL as string | undefined
-            const explorerKey = process.env.NEXT_PUBLIC_EXPLORER_API_KEY as string | undefined
+          // optional: query explorer API for last tx timestamp if NEXT_PUBLIC_EXPLORER_API_URL provided
+          const explorerUrl = process.env.NEXT_PUBLIC_EXPLORER_API_URL as string | undefined
+          const explorerKey = process.env.NEXT_PUBLIC_EXPLORER_API_KEY as string | undefined
 
-            const fetchLastActive = async (address: string) => {
-              if (!explorerUrl) return null
-              try {
-                const url = `${explorerUrl}?module=account&action=txlist&address=${address}&page=1&offset=1&sort=desc${explorerKey ? `&apikey=${explorerKey}` : ''}`
-                const r = await fetch(url)
-                if (!r.ok) return null
-                const json = await r.json()
-                if (json && Array.isArray(json.result) && json.result.length > 0) {
-                  const ts = Number(json.result[0].timeStamp || json.result[0].timestamp)
-                  if (!Number.isNaN(ts)) return Number(ts) * 1000
+          const fetchLastActive = async (address: string) => {
+            if (!explorerUrl) return null
+            try {
+              const url = `${explorerUrl}?module=account&action=txlist&address=${address}&page=1&offset=1&sort=desc${explorerKey ? `&apikey=${explorerKey}` : ''}`
+              const r = await fetch(url)
+              if (!r.ok) return null
+              const json = await r.json()
+              if (json && Array.isArray(json.result) && json.result.length > 0) {
+                const tx = json.result[0];
+                let ts = Number(tx.timeStamp || tx.timestamp)
+
+                // Fallback: if timestamp is missing but we have blockNumber, try to fetch block
+                if (Number.isNaN(ts) && tx.blockNumber) {
+                  try {
+                    const block = await client.getBlock({ blockNumber: BigInt(tx.blockNumber) })
+                    ts = Number(block.timestamp)
+                  } catch (e) {
+                    console.error('Failed to fetch block time', e)
+                  }
                 }
-              } catch (e) {
-                // ignore
+
+                if (!Number.isNaN(ts)) return Number(ts) * 1000
               }
-              return null
+            } catch (e) {
+              // ignore
             }
+            return null
+          }
 
-            const lastActivePromises = wallets.map((w) => fetchLastActive(w))
-            const lastActiveSettled = await Promise.allSettled(lastActivePromises)
+          const lastActivePromises = wallets.map((w) => fetchLastActive(w))
+          const lastActiveSettled = await Promise.allSettled(lastActivePromises)
 
-            // compute health
-            const calculateHealth = (
-              native: string,
-              txCountNum: number,
-              tokenValues: Record<string, string>,
-              hasAPrioriStake: boolean,
-              hasMagmaStake: boolean
-            ) => {
-              let score = 0
-              const nativeNum = parseFloat(native || '0')
-              if (nativeNum > 10) score += 20
-              if (nativeNum > 50) score += 10
+          // compute health
+          const calculateHealth = (
+            native: string,
+            txCountNum: number,
+            protocols: Record<string, any>
+          ) => {
+            let score = 0
+            const nativeNum = parseFloat(native || '0')
+            if (nativeNum > 10) score += 20
+            if (nativeNum > 50) score += 10
 
-              if (txCountNum > 5) score += 30
-              if (txCountNum > 20) score += 20
+            if (txCountNum > 5) score += 30
+            if (txCountNum > 20) score += 20
 
-              const protocolInteractions = Object.values(tokenValues).filter((v) => v && v !== '0').length
-                + (hasAPrioriStake ? 1 : 0)
-                + (hasMagmaStake ? 1 : 0)
-              if (protocolInteractions > 0) score += Math.min(30, protocolInteractions * 10)
+            const activeProtocols = Object.values(protocols).filter(p => p.active).length
+            if (activeProtocols > 0) score += Math.min(30, activeProtocols * 10)
 
-              if (score >= 80) return { score, label: '🟢 Elite' }
-              if (score >= 50) return { score, label: '🟡 Good' }
-              return { score, label: '🔴 Weak' }
+            if (score >= 80) return { score, label: '🟢 Elite' }
+            if (score >= 50) return { score, label: '🟡 Good' }
+            return { score, label: '🔴 Weak' }
+          }
+
+          for (let i = 0; i < wallets.length; i++) {
+            const wallet = wallets[i]
+            const txSettled = txCountSettled[i]
+            const txNum = txSettled && txSettled.status === 'fulfilled' ? Number(txSettled.value) : 0
+            const lastSettled = lastActiveSettled[i]
+            const lastTs = lastSettled && lastSettled.status === 'fulfilled' ? lastSettled.value : null
+
+            const health = calculateHealth(newData[wallet].nativeBalance, txNum, newData[wallet].protocols)
+
+            // merge into newData
+            newData[wallet] = {
+              ...newData[wallet],
+              txCount: txNum,
+              lastActive: lastTs,
+              healthScore: health.score,
+              healthLabel: health.label,
             }
+          }
 
-            for (let i = 0; i < wallets.length; i++) {
-              const wallet = wallets[i]
-              const txSettled = txCountSettled[i]
-              const txNum = txSettled && txSettled.status === 'fulfilled' ? Number(txSettled.value) : 0
-              const lastSettled = lastActiveSettled[i]
-              const lastTs = lastSettled && lastSettled.status === 'fulfilled' ? lastSettled.value : null
-
-              // reconstruct tokenValues we stored earlier
-              const tokenValues: Record<string, string> = {}
-              for (let t = 0; t < tokenKeys.length; t++) {
-                tokenValues[tokenKeys[t]] = (newData[wallet] as any)[tokenKeys[t]] ?? '0'
-              }
-
-              // include aPriori stake as an indicator (if present)
-              const hasAPrioriStake = (newData[wallet].aPrioriStake && newData[wallet].aPrioriStake !== '0')
-              const hasMagmaStake = (newData[wallet].magmaStake && newData[wallet].magmaStake !== '0')
-              const health = calculateHealth(newData[wallet].nativeBalance, txNum, tokenValues, !!hasAPrioriStake, !!hasMagmaStake)
-
-              // merge into newData
-              newData[wallet] = {
-                ...newData[wallet],
-                txCount: txNum,
-                lastActive: lastTs,
-                healthScore: health.score,
-                healthLabel: health.label,
-              }
-            }
-
-            set({ data: newData, isLoading: false });
+          set({ data: newData, isLoading: false });
         } catch (error) {
           console.error("Fetch error:", error);
           set({ isLoading: false });

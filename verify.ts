@@ -49,7 +49,6 @@ async function main() {
 
   // token keys we want to check per wallet (order matters for parsing results)
   const tokenKeys: (keyof typeof CONTRACTS)[] = [
-    'aPriori',
     'Magma',
     'AUSD',
     'USDC',
@@ -199,8 +198,6 @@ async function main() {
       results.push({
         Address: `${wallet.slice(0, 6)}...${wallet.slice(-4)}`,
         'MON (Native)': nativeBal,
-        'aPriori (aprMON)': tokenData['aPriori'] ?? '-',
-        'aPriori Stake': aprStake,
         'Magma Stake': magmaStake,
         'Magma Info': magmaInfo,
         'Magma (gMON)': tokenData['Magma'] ?? '-',

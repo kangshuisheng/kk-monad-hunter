@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import { PROTOCOLS } from "@/lib/config";
 import WalletRow from "./WalletRow";
-import WalletDetails from "./WalletDetails";
 import {
   Table,
   TableBody,
@@ -20,19 +19,16 @@ export default function WalletTable({
   removeWallet,
   copyAddress,
 }: any) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-
-  const toggle = (w: string) => setExpanded((s) => ({ ...s, [w]: !s[w] }));
-
   return (
-    <div className="overflow-x-auto">
+    <div className="rounded-md border border-slate-200 dark:border-slate-800 overflow-hidden">
       <Table>
-        <TableHeader>
+        <TableHeader className="bg-slate-50 dark:bg-slate-900/50">
           <TableRow>
-            <TH>Address</TH>
+            <TH className="w-[180px]">Address</TH>
             <TH>MON Balance</TH>
-            {visibleTokenColumns.map((c: any) => (
-              <TH key={c.key}>{c.label}</TH>
+            {/* Ecosystem Matrix Headers */}
+            {PROTOCOLS.map((p) => (
+              <TH key={p.name} className="text-center">{p.label}</TH>
             ))}
             <TH>Tx Count</TH>
             <TH>Last Active</TH>
@@ -56,27 +52,14 @@ export default function WalletTable({
             wallets.map((wallet: string) => {
               const walletData = data[wallet];
               return (
-                <React.Fragment key={wallet}>
-                  <WalletRow
-                    wallet={wallet}
-                    walletData={walletData}
-                    visibleTokenColumns={visibleTokenColumns}
-                    explorerBase={explorerBase}
-                    expanded={!!expanded[wallet]}
-                    onToggleExpand={toggle}
-                    onRemove={removeWallet}
-                    onCopyAddress={copyAddress}
-                  />
-
-                  {expanded[wallet] && (
-                    <WalletDetails
-                      wallet={wallet}
-                      walletData={walletData}
-                      visibleTokenColumns={visibleTokenColumns}
-                      explorerBase={explorerBase}
-                    />
-                  )}
-                </React.Fragment>
+                <WalletRow
+                  key={wallet}
+                  wallet={wallet}
+                  walletData={walletData}
+                  explorerBase={explorerBase}
+                  onRemove={removeWallet}
+                  onCopyAddress={copyAddress}
+                />
               );
             })
           )}
